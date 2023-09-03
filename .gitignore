@@ -8,7 +8,6 @@ bazel-bin
 bazel-out
 bazel-testlogs
 
-
 # Emacs autosaves
 *~
 \#*\#
@@ -21,3 +20,8 @@ bazel-testlogs
 *.VC.opendb
 *.suo
 *.user
+
+
+build/
+.tf_configure.bazelrc
+tools/python_bin_path.sh
