@@ -1370,5 +1370,63 @@ TEST_F(PatternMatcherTest, SharedSubpatternCanBeNested) {
   }
 }
 
+TEST_F(PatternMatcherTest, TestWithContractingDims) {
+  constexpr char kModuleStr[] = R"(
+    HloModule test_module
+    ENTRY test {
+      %param1 = f32[2048,1024] parameter(0)
+      %param2 = f32[1024,33708] parameter(1)
+      ROOT %dot1 = f32[2048,33708]{1,0} dot(f32[2048,1024]{1,0} %param1,
+                f32[1024,33708]{0,1} %param2),
+                lhs_contracting_dims={1}, rhs_contracting_dims={0}
+    })";
+  TF_ASSERT_OK_AND_ASSIGN(auto hlo_module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+  auto* root = hlo_module->entry_computation()->root_instruction();
+  EXPECT_TRUE(Match(root, m::Dot().WithContractingDims({1}, {0})));
+  EXPECT_FALSE(Match(root, m::Dot().WithContractingDims({0}, {1})));
+  EXPECT_FALSE(Match(root, m::Dot().WithContractingDims({1}, {0, 1})));
+  EXPECT_DESC_AND_EXPLANATION(
+      root, m::Dot().WithContractingDims({1}, {0, 1}),
+      "an HloInstruction:\n"
+      " * with opcode dot AND\n"
+      " * with lhs_contracting_dims {1} and rhs_contracting_dims {0,1}",
+      "rhs_contracting_dimensions {0} don't match expected {0,1}\n"
+      "in dot1 = f32[2048,33708]{1,0} dot(f32[2048,1024]{1,0} param1, "
+      "f32[1024,33708]{1,0} param2), lhs_contracting_dims={1}, "
+      "rhs_contracting_dims={0}");
+}
+
+TEST_F(PatternMatcherTest, TestWithReplicaGroups) {
+  constexpr char kModuleStr[] = R"(
+    HloModule test_module
+    add {
+      lhs = f32[] parameter(0)
+      rhs = f32[] parameter(1)
+      ROOT add = f32[] add(lhs, rhs)
+    }
+
+    ENTRY test {
+      input = f32[128,32]{0,1} parameter(0)
+      ROOT all-reduce = f32[128,32]{0,1} all-reduce(input),
+                        replica_groups={{0,1},{2,3}}, to_apply=add
+    })";
+  TF_ASSERT_OK_AND_ASSIGN(auto hlo_module,
+                          ParseAndReturnVerifiedModule(kModuleStr));
+  auto* root = hlo_module->entry_computation()->root_instruction();
+  EXPECT_TRUE(Match(root, m::AllReduce().WithReplicaGroups({{0, 1}, {2, 3}})));
+  EXPECT_FALSE(Match(root, m::AllReduce().WithReplicaGroups({{}, {}})));
+  EXPECT_FALSE(Match(root, m::AllReduce().WithReplicaGroups({{1, 0}, {3, 2}})));
+  EXPECT_DESC_AND_EXPLANATION(
+      root, m::AllReduce().WithReplicaGroups({{1, 0}, {3, 2}}),
+      "an HloInstruction:\n"
+      " * with opcode all-reduce AND\n"
+      " * with replica_group {{1,0},{3,2}}",
+      "replica_group {{0,1},{2,3}} don't match expected with replica_group "
+      "{{1,0},{3,2}}\n"
+      "in all-reduce = f32[128,32]{0,1} all-reduce(f32[128,32]{0,1} input), "
+      "replica_groups={{0,1},{2,3}}, to_apply=add");
+}
+
 }  // namespace
 }  // namespace xla

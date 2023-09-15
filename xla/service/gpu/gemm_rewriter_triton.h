@@ -16,11 +16,13 @@ limitations under the License.
 #define XLA_SERVICE_GPU_GEMM_REWRITER_TRITON_H_
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
 #include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "xla/autotuning.pb.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -35,6 +37,11 @@ limitations under the License.
 
 namespace xla {
 namespace gpu {
+
+// Is there a non-empty suffix "s" of span such that product(s) % divisor = 0
+// and for all t != s non-empty suffixes of s: d % product(t) = 0?
+bool HasDivisibleSuffixAllowingSplit(absl::Span<int64_t const> span,
+                                     int64_t divisor);
 
 // Allowlist of unary elementwise operations supported by Triton GEMM codegen.
 std::vector<HloOpcode> TritonSupportedUnaryElementwise(PrimitiveType);
@@ -74,11 +81,8 @@ class TensorIterationSpec {
     // of several HLO dimensions. Product of subfragments equals `count`.
     std::vector<int64_t> subfragments;
 
-    std::string ToString() const {
-      return absl::StrCat("{stride=", stride, ", count=", count,
-                          ", subfragments=[", absl::StrJoin(subfragments, ", "),
-                          "]}");
-    }
+    bool operator!=(const IterationSpecFragment& other) const;
+    std::string ToString() const;
   };
   // Description of complex iteration over a sequence of several strides.
   // Describes a logically contiguous dimension of a tensor physically
@@ -93,33 +97,15 @@ class TensorIterationSpec {
     return dim_iteration_specs_[dimension];
   }
   const StorageType& Storage() const { return dim_iteration_specs_; }
-  StorageType::iterator begin() { return dim_iteration_specs_.begin(); }
-  StorageType::iterator end() { return dim_iteration_specs_.end(); }
-  StorageType::const_iterator cbegin() const {
-    return dim_iteration_specs_.cbegin();
-  }
-  StorageType::const_iterator cend() const {
-    return dim_iteration_specs_.cend();
+  void RemoveEmptyDimensions() {
+    absl::erase_if(dim_iteration_specs_,
+                   [](const auto& it) { return it.second.empty(); });
   }
 
   // Compares physical layouts of tensors ignoring subfragments of dimensions.
   bool operator==(const TensorIterationSpec& other) const;
 
-  std::string ToString() const {
-    return absl::StrCat(
-        "{",
-        absl::StrJoin(dim_iteration_specs_, ", ",
-                      [&](std::string* s, const auto& kv) {
-                        absl::StrAppend(
-                            s, kv.first, ": ", "[",
-                            absl::StrJoin(kv.second, ", ",
-                                          [&](std::string* ss, const auto& v) {
-                                            absl::StrAppend(ss, v.ToString());
-                                          }),
-                            "]");
-                      }),
-        "}");
-  }
+  std::string ToString() const;
 
  private:
   StorageType dim_iteration_specs_;
@@ -128,6 +114,7 @@ class TensorIterationSpec {
 // Analysis of tensor iteration orders within tiled fusions.
 class TritonFusionAnalysis {
   Status ExecuteForDotFusion(const HloInstruction& dot, int split_k);
+  Status ExecuteForSoftmaxFusion(const HloInstruction& root);
 
  public:
   // Execute the analysis of a fusion computation.
@@ -141,6 +128,11 @@ class TritonFusionAnalysis {
   // defined by left operand, right operand and output.
   enum class Scope { LHS = 0, RHS = 1, OUTPUT = 2 };
 
+  using IterationSpecByInstructionMap =
+      ConstHloInstructionMap<TensorIterationSpec>;
+  using IterationSpecByInstructionByScopeMap =
+      std::map<Scope, IterationSpecByInstructionMap>;
+
   // Every parameter requires a separate piece of shared memory for asynchronous
   // loads. Multiple parameters are approximately equivalent to multiple
   // pipeline stages.
@@ -151,56 +143,16 @@ class TritonFusionAnalysis {
                                                         const HloInstruction*,
                                                         int dimension) const;
   // Parameter HLO instructions used in a scope of `dot`.
-  const absl::flat_hash_set<const HloInstruction*>& ScopeParameters(
-      const Scope scope) const {
+  const ConstHloInstructionSet& ScopeParameters(const Scope scope) const {
     return parameters_.at(scope);
   }
 
-  std::string ToString() const {
-    return absl::StrCat(
-        "TritonFusionAnalysis{\n",
-        absl::StrJoin(iter_specs_, ",\n",
-                      [&](std::string* s, const auto& kv) {
-                        absl::StrAppend(
-                            s, ScopeToString(kv.first), ": ",
-                            IterationSpecByInstructionMapToString(kv.second));
-                      }),
-        "\n}");
-  }
+  std::string ToString() const;
 
  private:
-  using IterationSpecByInstructionMap =
-      absl::flat_hash_map<const HloInstruction*, TensorIterationSpec>;
-  using IterationSpecByInstructionByScopeMap =
-      absl::flat_hash_map<Scope, IterationSpecByInstructionMap>;
-
-  static std::string IterationSpecByInstructionMapToString(
-      const IterationSpecByInstructionMap& m) {
-    return absl::StrCat("IterSpec{",
-                        absl::StrJoin(m, ", ",
-                                      [&](std::string* s, const auto& kv) {
-                                        absl::StrAppend(s, kv.first->name(),
-                                                        ": ",
-                                                        kv.second.ToString());
-                                      }),
-                        "}");
-  }
-
-  static std::string ScopeToString(Scope s) {
-    switch (s) {
-      case Scope::LHS:
-        return "LHS";
-      case Scope::RHS:
-        return "RHS";
-      case Scope::OUTPUT:
-        return "OUTPUT";
-    }
-  }
-
   IterationSpecByInstructionByScopeMap iter_specs_;
   // HLO computation parameters per scope.
-  absl::flat_hash_map<Scope, absl::flat_hash_set<const HloInstruction*>>
-      parameters_;
+  std::map<Scope, ConstHloInstructionSet> parameters_;
 };
 
 // Rewrite compatible dot() calls into custom calls with fused computations

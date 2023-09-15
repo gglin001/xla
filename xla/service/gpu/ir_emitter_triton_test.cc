@@ -33,7 +33,6 @@ limitations under the License.
 #include "xla/service/gpu/gpu_device_info.h"
 #include "xla/service/gpu/gpu_device_info_for_tests.h"
 #include "xla/service/gpu/ir_emission_utils.h"
-#include "xla/service/gpu/launch_dimensions.h"
 #include "xla/service/gpu/tests/gpu_codegen_test.h"
 #include "xla/service/pattern_matcher.h"
 #include "xla/service/pattern_matcher_gmock.h"
@@ -212,10 +211,11 @@ ENTRY entry {
   config.set_num_stages(4);
   config.set_num_warps(8);
   EXPECT_THAT(
-      TritonWrapper("test_fn", triton_dot_computation, kTritonGemmFusionKind,
+      TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
+                    "test_fn", triton_dot_computation, kTritonGemmFusionKind,
                     se::CudaComputeCapability{se::CudaComputeCapability::AMPERE,
                                               /*minor=*/0},
-                    dev_info, config, &llvm_module, &MatMul, mlir_context),
+                    dev_info, config, &llvm_module, &EmitMatMul, mlir_context),
       tsl::testing::StatusIs(tsl::error::RESOURCE_EXHAUSTED,
                              "Shared memory size limit exceeded."));
 
@@ -224,14 +224,14 @@ ENTRY entry {
   config.set_block_k(128);
   config.set_num_stages(1);
   TF_ASSERT_OK_AND_ASSIGN(
-      const LaunchDimensions launch_dimensions,
-      TritonWrapper("test_fn", triton_dot_computation, kTritonGemmFusionKind,
+      const auto result,
+      TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
+                    "test_fn", triton_dot_computation, kTritonGemmFusionKind,
                     se::CudaComputeCapability{se::CudaComputeCapability::AMPERE,
                                               /*minor=*/0},
-                    dev_info, config, &llvm_module, &MatMul, mlir_context));
+                    dev_info, config, &llvm_module, &EmitMatMul, mlir_context));
   // Use optin shared memory which is > shared_memory_per_block.
-  EXPECT_GT(launch_dimensions.SharedMemBytes(),
-            dev_info.shared_memory_per_block);
+  EXPECT_GT(result.shmem_bytes, dev_info.shared_memory_per_block);
 }
 
 TEST_F(TritonGemmTest, MultipleDims) {
@@ -639,10 +639,11 @@ ENTRY entry {
   config.set_num_stages(1);
   config.set_num_warps(2);
   EXPECT_THAT(
-      TritonWrapper("test_fn", triton_dot_computation, kTritonGemmFusionKind,
+      TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
+                    "test_fn", triton_dot_computation, kTritonGemmFusionKind,
                     se::CudaComputeCapability{se::CudaComputeCapability::AMPERE,
                                               /*minor=*/0},
-                    dev_info, config, &llvm_module, &MatMul, mlir_context),
+                    dev_info, config, &llvm_module, &EmitMatMul, mlir_context),
       tsl::testing::StatusIs(
           tsl::error::RESOURCE_EXHAUSTED,
           "Tiling complexity heuristic exceeded: 147456 > 9000"));
@@ -652,10 +653,11 @@ ENTRY entry {
   config.set_block_n(32);
   config.set_block_k(32);
   TF_CHECK_OK(
-      TritonWrapper("test_fn", triton_dot_computation, kTritonGemmFusionKind,
+      TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
+                    "test_fn", triton_dot_computation, kTritonGemmFusionKind,
                     se::CudaComputeCapability{se::CudaComputeCapability::AMPERE,
                                               /*minor=*/0},
-                    dev_info, config, &llvm_module, &MatMul, mlir_context)
+                    dev_info, config, &llvm_module, &EmitMatMul, mlir_context)
           .status());
 }
 
@@ -683,6 +685,36 @@ ENTRY e {
                                           "num_stages":"3","num_warps":"2"}}
 })")
                   .status());
+}
+
+// Normally optimized HLO should contain `copy` instead of `transpose` but
+// it's also possible to get transposes by modifying the compiler's pipeline.
+// The emitter just has to skip through the transpose - it's handled by the
+// tiled fusion analysis.
+TEST_F(TritonGemmTest, TritonEmitterCanHandleTransposes) {
+  MatchOptimizedHlo(R"(
+t {
+  p0 = f16[55,77,111]{2,1,0} parameter(0)
+  p1 = f16[111,77,99]{2,1,0} parameter(1)
+  t = f16[77,99,111]{2,1,0} transpose(p1), dimensions={1,2,0}
+  ROOT d = f16[77,55,99]{2,1,0} dot(p0, t),
+    lhs_batch_dims={1}, lhs_contracting_dims={2},
+    rhs_batch_dims={0}, rhs_contracting_dims={2}
+}
+
+ENTRY e {
+  p0 = f16[55,77,111]{2,1,0} parameter(0)
+  p1 = f16[111,77,99]{2,1,0} parameter(1)
+  ROOT r = f16[77,55,99]{2,1,0} fusion(p0, p1), kind=kCustom,
+    calls=t, backend_config={"kind":"__triton_gemm"}
+})",
+                    // This partially optimized HLO will go through the
+                    // autotuner which will run the fusion through the emitter
+                    // multiple times and assign block sizes on success.
+                    R"(
+; CHECK: f16[77,99,111]{2,1,0} transpose
+; CHECK: block_m
+)");
 }
 
 class TritonGemmTestAny : public TritonGemmTest {
@@ -804,6 +836,30 @@ ENTRY e {
   EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-1, /*arel=*/1e-3}));
 }
 
+TEST_F(TritonGemmLevel2Test,
+       ParametersWithDifferentLayoutsAreSupportedInOneScope) {
+  const std::string kHloText = R"(
+ENTRY e {
+  p0 = s8[5,3] parameter(0)
+  p0c = f16[5,3] convert(p0)
+  p1 = f16[5,7] parameter(1)
+  p2 = f16[7,5] parameter(2)
+  t = f16[5,7] transpose(p2), dimensions={1,0}
+  a = f16[5,7] add(t, p1)
+  ROOT d = f16[3,7] dot(p0c, a),
+    lhs_contracting_dims={0}, rhs_contracting_dims={0}
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          GetOptimizedModule(kHloText));
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      GmockMatch(m::Fusion(m::Parameter(), m::Parameter(), m::Parameter())
+                     .WithFusionKind(HloInstruction::FusionKind::kCustom)));
+
+  EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-6, /*arel=*/1e-6}));
+}
+
 TEST_F(TritonGemmLevel2Test, BinaryOperationOnLargeParametersIsFused) {
   const std::string kHloText = R"(
 HloModule m
@@ -860,6 +916,27 @@ ENTRY e {
   EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-2, /*arel=*/1e-2}));
 }
 
+TEST_F(TritonGemmLevel2Test, BroadcastOfScalarParameterIsFused) {
+  const std::string kHloText = R"(
+ENTRY e {
+  p0 = f16[64,256] parameter(0)
+  p0c = f32[64,256] convert(p0)
+  p1 = f32[] parameter(1)
+  b = f32[256,128] broadcast(p1), dimensions={}
+  ROOT d = f32[64,128] dot(p0c, b),
+    lhs_contracting_dims={1}, rhs_contracting_dims={0}
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          GetOptimizedModule(kHloText));
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      GmockMatch(m::Fusion(m::Parameter(), m::Parameter())
+                     .WithFusionKind(HloInstruction::FusionKind::kCustom)));
+
+  EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-3, /*arel=*/1e-3}));
+}
+
 TEST_F(TritonGemmLevel2Test, BroadcastOfScalarConstantIsFused) {
   const std::string kHloText = R"(
 HloModule m
@@ -881,6 +958,51 @@ ENTRY e {
                      .WithFusionKind(HloInstruction::FusionKind::kCustom)));
 
   EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/2e-3, /*arel=*/2e-3}));
+}
+
+TEST_F(TritonGemmLevel2Test, DoubleBroadcastOfScalarConstantIsHandled) {
+  const std::string kHloText = R"(
+ENTRY e {
+  c = s32[] constant(1)
+  bc1 = s32[21]{0} broadcast(c), dimensions={}
+  p0 = s32[21]{0} parameter(0)
+  cmp = pred[21]{0} compare(bc1, p0), direction=EQ
+  convert.6 = bf16[21]{0} convert(cmp)
+  bc2 = bf16[3,21]{1,0} broadcast(convert.6), dimensions={1}
+  p1 = bf16[21,71]{1,0} parameter(1)
+  ROOT d = bf16[3,71]{1,0} dot(bc2, p1),
+    lhs_contracting_dims={1}, rhs_contracting_dims={0}
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          GetOptimizedModule(kHloText));
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      GmockMatch(m::Fusion(m::Parameter(), m::Parameter())
+                     .WithFusionKind(HloInstruction::FusionKind::kCustom)));
+
+  EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-6, /*arel=*/1e-6}));
+}
+
+TEST_F(TritonGemmLevel2Test, BroadcastOfVectorConstantIsFused) {
+  const std::string kHloText = R"(
+HloModule m
+
+ENTRY e {
+  p0 = s8[60,5] parameter(0)
+  c0 = f16[60,5] convert(p0)
+  cst1 = f16[120] constant({...})
+  r1 = f16[5,120] broadcast(cst1), dimensions={1}
+  ROOT d = f16[60,120] dot(c0, r1),
+    lhs_contracting_dims={1}, rhs_contracting_dims={0}
+})";
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<HloModule> module,
+                          GetOptimizedModule(kHloText));
+  EXPECT_THAT(
+      module->entry_computation()->root_instruction(),
+      GmockMatch(m::Fusion(m::Parameter(), m::Constant())
+                     .WithFusionKind(HloInstruction::FusionKind::kCustom)));
+  EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-6, /*arel=*/1e-6}));
 }
 
 TEST_F(TritonGemmLevel2Test, AlwaysFuseScalarConstantAtBroadcastInput) {
@@ -908,6 +1030,30 @@ ENTRY e {
 )");
 
   EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/1e-3, /*arel=*/1e-3}));
+}
+
+TEST_F(TritonGemmLevel2Test, BroadcastOfVectorParameterIsFused) {
+  const std::string kHloText = R"(
+triton_dot {
+  p0 = f16[75] parameter(0)
+  bc0 = f16[75,67] broadcast(p0), dimensions={0}
+  p1 = f16[92,75] parameter(1)
+  ROOT d = f16[92,67] dot(p1, bc0),
+    lhs_contracting_dims={1}, rhs_contracting_dims={0}
+}
+
+ENTRY e {
+  p0 = f16[75] parameter(0)
+  p1 = f16[92,75] parameter(1)
+  ROOT _ = f16[92,67] fusion(p0, p1), kind=kCustom, calls=triton_dot,
+    backend_config={kind: "__triton_gemm", triton_gemm_config:
+      {"block_m":32,"block_n":64,"block_k":32,"split_k":1,"num_stages":1,"num_warps":1}}
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> module,
+                          ParseAndReturnVerifiedModule(kHloText));
+
+  EXPECT_TRUE(RunAndCompare(kHloText, ErrorSpec{/*aabs=*/2e-3, /*arel=*/2e-3}));
 }
 
 TEST_F(TritonGemmTest, SineOutputIsNotFused) {
@@ -1321,18 +1467,18 @@ ENTRY e {
                               ->root_instruction()
                               ->backend_config<FusionBackendConfig>());
   TF_ASSERT_OK_AND_ASSIGN(
-      const LaunchDimensions launch_dimensions,
-      TritonWrapper("test_fn", triton_dot_computation, kTritonGemmFusionKind,
+      const auto result,
+      TritonWrapper(*TritonFusionAnalysis::Execute(*triton_dot_computation),
+                    "test_fn", triton_dot_computation, kTritonGemmFusionKind,
                     GetCudaComputeCapability(), dev_info,
-                    config.triton_gemm_config(), &llvm_module, &MatMul,
+                    config.triton_gemm_config(), &llvm_module, &EmitMatMul,
                     mlir_context));
   // The config is chosen so that the used memory size is slightly above the
   // 48 kB boundary of standard / optin shared memory so that any GPU that
   // has the optin one should be able to execute the test.
-  EXPECT_EQ(launch_dimensions.SharedMemBytes(), kBytesOfSharedMemoryTested);
+  EXPECT_EQ(result.shmem_bytes, kBytesOfSharedMemoryTested);
   // Make sure the written config indeed has to use optin shared memory.
-  EXPECT_GT(launch_dimensions.SharedMemBytes(),
-            dev_info.shared_memory_per_block);
+  EXPECT_GT(result.shmem_bytes, dev_info.shared_memory_per_block);
 
   const std::string kHloTextLowShmem = R"(
 HloModule t
@@ -1974,6 +2120,56 @@ ENTRY e {
 
   EXPECT_TRUE(RunAndCompareTwoModules(kHloTextRef, kHloTextTest,
                                       ErrorSpec{/*aabs=*/1e-6, /*arel=*/1e-6},
+                                      /*run_hlo_passes=*/false));
+}
+
+TEST_F(CompareTest, DifferentLayoutsAreSupportedInOneScope) {
+  const std::string kHloTextTest = R"(
+triton_dot {
+  p1 = f16[3,3,2,16]{1,3,2,0} parameter(1)
+  cvt1 = f32[3,3,2,16]{1,3,2,0} convert(p1)
+  p0 = f16[9,32]{0,1} parameter(0)
+  b0 = f16[3,3,2,16]{1,0,3,2} bitcast(p0)
+  cp0 = f16[3,3,2,16]{1,3,2,0} copy(b0)
+  cvt0 = f32[3,3,2,16]{1,3,2,0} convert(cp0)
+  m = f32[3,3,2,16]{1,3,2,0} multiply(cvt1, cvt0)
+  cvt2 = f16[3,3,2,16]{1,3,2,0} convert(m)
+  cp1 = f16[3,3,2,16]{3,2,1,0} copy(cvt2)
+  b1 = f16[9,32]{1,0} bitcast(cp1)
+  p2 = f16[32,32]{1,0} parameter(2)
+  ROOT r = f16[9,32]{1,0} dot(b1, p2),
+    lhs_contracting_dims={1}, rhs_contracting_dims={0}
+}
+
+ENTRY e {
+  p0 = f16[9,32]{0,1} parameter(0)
+  p1 = f16[3,3,2,16]{1,3,2,0} parameter(1)
+  p2 = f16[32,32]{1,0} parameter(2)
+  ROOT r = f16[9,32]{1,0} fusion(p0, p1, p2),
+    kind=kCustom, calls=triton_dot,
+    backend_config={kind: "__triton_gemm",
+    triton_gemm_config: {"block_m":32,"block_n":32,"block_k":32,"split_k":1,"num_stages":1,"num_warps":2}}
+})";
+
+  const std::string kHloTextRef = R"(
+ENTRY e {
+  p1 = f16[3,3,2,16]{1,3,2,0} parameter(1)
+  cvt1 = f32[3,3,2,16]{1,3,2,0} convert(p1)
+  p0 = f16[9,32]{0,1} parameter(0)
+  b0 = f16[3,3,2,16]{1,0,3,2} bitcast(p0)
+  cp0 = f16[3,3,2,16]{1,3,2,0} copy(b0)
+  cvt0 = f32[3,3,2,16]{1,3,2,0} convert(cp0)
+  m = f32[3,3,2,16]{1,3,2,0} multiply(cvt1, cvt0)
+  cvt2 = f16[3,3,2,16]{1,3,2,0} convert(m)
+  cp1 = f16[3,3,2,16]{3,2,1,0} copy(cvt2)
+  b1 = f16[9,32]{1,0} bitcast(cp1)
+  p2 = f16[32,32]{1,0} parameter(2)
+  ROOT r = f16[9,32]{1,0} dot(b1, p2),
+    lhs_contracting_dims={1}, rhs_contracting_dims={0}
+})";
+
+  EXPECT_TRUE(RunAndCompareTwoModules(kHloTextRef, kHloTextTest,
+                                      ErrorSpec{/*aabs=*/1e-4, /*arel=*/1e-4},
                                       /*run_hlo_passes=*/false));
 }
 

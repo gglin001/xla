@@ -53,7 +53,7 @@ extern "C" {
 // Changes include:
 // * Adding a new field to the PJRT_Api or argument structs
 // * Renaming a method or argument (doesn't affect ABI)
-#define PJRT_API_MINOR 28
+#define PJRT_API_MINOR 30
 
 // The plugin should set the major_version and minor_version of
 // PJRT_Api.pjrt_api_version to be the `PJRT_API_MAJOR` and `PJRT_API_MINOR` in
@@ -145,6 +145,7 @@ typedef enum {
   PJRT_NamedValue_kInt64,
   PJRT_NamedValue_kInt64List,
   PJRT_NamedValue_kFloat,
+  PJRT_NamedValue_kBool,
 } PJRT_NamedValue_Type;
 
 // Named value for key-value pairs.
@@ -159,6 +160,7 @@ struct PJRT_NamedValue {
     int64_t int64_value;
     const int64_t* int64_array_value;
     float float_value;
+    bool bool_value;
   };
   // `value_size` is the number of elements for array/string and 1 for scalar
   // values.
@@ -1294,6 +1296,38 @@ PJRT_DEFINE_STRUCT_TRAITS(PJRT_Executable_GetCostAnalysis_Args, properties);
 typedef PJRT_Error* PJRT_Executable_GetCostAnalysis(
     PJRT_Executable_GetCostAnalysis_Args* args);
 
+struct PJRT_Executable_OutputElementTypes_Args {
+  size_t struct_size;
+  void* priv;
+  PJRT_Executable* executable;
+  PJRT_Buffer_Type* output_types;  // out
+  size_t num_output_types;         // out
+};
+PJRT_DEFINE_STRUCT_TRAITS(PJRT_Executable_OutputElementTypes_Args,
+                          num_output_types);
+
+// Returns a list of element types for outputs.
+typedef PJRT_Error* PJRT_Executable_OutputElementTypes(
+    PJRT_Executable_OutputElementTypes_Args* args);
+
+struct PJRT_Executable_OutputDimensions_Args {
+  size_t struct_size;
+  void* priv;
+  PJRT_Executable* executable;
+  size_t num_outputs;
+  // Has length: sum of all elements in the list `dim_sizes`.
+  const int64_t* dims;  // out
+  // Has length `num_outputs`.
+  const size_t* dim_sizes;  // out
+};
+PJRT_DEFINE_STRUCT_TRAITS(PJRT_Executable_OutputDimensions_Args, dim_sizes);
+
+// Returns a list of dimensions for outputs. Each output has an array shape,
+// which is represented by a list of dimensions. The array shapes of all outputs
+// are concatenated into a single list of dimensions.
+typedef PJRT_Error* PJRT_Executable_OutputDimensions(
+    PJRT_Executable_OutputDimensions_Args* args);
+
 struct PJRT_Executable_OutputMemoryKinds_Args {
   size_t struct_size;
   void* priv;
@@ -1980,9 +2014,15 @@ typedef struct {
   _PJRT_API_STRUCT_FIELD(PJRT_TopologyDescription_Attributes);
 
   _PJRT_API_STRUCT_FIELD(PJRT_Compile);
+
+  // Always add new fields to the end of the struct. Move fields below to their
+  // corresponding places after each major version bump.
+  _PJRT_API_STRUCT_FIELD(PJRT_Executable_OutputElementTypes);
+  _PJRT_API_STRUCT_FIELD(PJRT_Executable_OutputDimensions);
 } PJRT_Api;
 
-const size_t PJRT_Api_STRUCT_SIZE = PJRT_STRUCT_SIZE(PJRT_Api, PJRT_Compile);
+const size_t PJRT_Api_STRUCT_SIZE =
+    PJRT_STRUCT_SIZE(PJRT_Api, PJRT_Executable_OutputDimensions);
 
 #undef _PJRT_API_STRUCT_FIELD
 #undef PJRT_DEFINE_STRUCT_TRAITS

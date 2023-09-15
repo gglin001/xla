@@ -103,5 +103,27 @@ void FindFusionParameters(
       [&](const HloInstruction&) { return TraversalResult::kVisitOperands; });
 }
 
+bool HloAnyOf(absl::Span<const HloInstruction* const> roots,
+              const FusionBoundaryFn& boundary,
+              const std::function<bool(const HloInstruction& node)>& visit) {
+  return HloFindIf(roots, boundary, visit) != nullptr;
+}
+
+const HloInstruction* HloFindIf(
+    absl::Span<const HloInstruction* const> roots,
+    const FusionBoundaryFn& boundary,
+    const std::function<bool(const HloInstruction& node)>& visit) {
+  const HloInstruction* result = nullptr;
+  HloBfsConsumersFirstTraversal(roots, boundary,
+                                [&](const HloInstruction& node) {
+                                  if (visit(node)) {
+                                    result = &node;
+                                    return TraversalResult::kAbortTraversal;
+                                  }
+                                  return TraversalResult::kVisitOperands;
+                                });
+  return result;
+}
+
 }  // namespace gpu
 }  // namespace xla

@@ -113,11 +113,12 @@ static bool HasFp8(const HloModule& hlo_module) {
 }
 
 // Lowers MLIR module to the XLA Gpu runtime custom calls.
-static Status LowerToXlaGpuRuntime(
-    mlir::ModuleOp module, llvm::StringRef entry_function_name,
-    llvm::ArrayRef<int64_t> buffer_sizes, ThunkSequence* thunk_sequence,
-    const DebugOptions& debug_options,
-    stream_executor::CudaComputeCapability cuda_compute_capability) {
+static Status LowerToXlaGpuRuntime(mlir::ModuleOp module,
+                                   llvm::StringRef entry_function_name,
+                                   llvm::ArrayRef<int64_t> buffer_sizes,
+                                   ThunkSequence* thunk_sequence,
+                                   const DebugOptions& debug_options,
+                                   GpuVersion compute_capability) {
   if (!module) {
     return InternalError("No MLIR module to lower.");
   }
@@ -129,7 +130,7 @@ static Status LowerToXlaGpuRuntime(
   opts.min_graph_size = debug_options.xla_gpu_graph_min_graph_size();
   opts.enable_concurrent_region =
       debug_options.xla_gpu_graph_enable_concurrent_region();
-  opts.compute_capability = cuda_compute_capability;
+  opts.compute_capability = compute_capability;
   populateXlaGpuRuntimePasses(pm, thunk_sequence, opts);
 
   if (pm.run(module).failed()) {
@@ -147,12 +148,8 @@ static Status LowerToXlaGpu2Runtime(mlir::ModuleOp module,
                                     const DebugOptions& debug_options) {
   mlir::PassManager pm(module->getName(), mlir::PassManager::Nesting::Implicit);
 
-  RuntimeBackend backend = debug_options.xla_gpu_enable_gpu2_hal()
-                               ? RuntimeBackend::kHAL
-                               : RuntimeBackend::kStreamExecutor;
-
   Gpu2PipelineOpts opts;
-  populateGpu2RuntimePasses(pm, thunk_sequence, backend, opts);
+  populateGpu2RuntimePasses(pm, thunk_sequence, opts);
 
   if (pm.run(module).failed()) {
     return InternalError(
@@ -208,8 +205,7 @@ StatusOr<GpuExecutable::OwnedGpuRuntimeProgram> LowerToJitRt(
     mlir::ModuleOp mlir_module, llvm::StringRef entry_function_name,
     llvm::ArrayRef<int64_t> buffer_sizes, const HloModuleConfig& module_config,
     std::unique_ptr<ThunkSequence> thunk_sequence,
-    const HloModule* hlo_module_for_dump,
-    stream_executor::CudaComputeCapability cuda_compute_capability) {
+    const HloModule* hlo_module_for_dump, GpuVersion compute_capability) {
   // Forward collective (NCCL) attributes for use by the lowering pipeline.
   ForwardCollectiveAttrs(mlir_module, entry_function_name, module_config);
 
@@ -217,7 +213,7 @@ StatusOr<GpuExecutable::OwnedGpuRuntimeProgram> LowerToJitRt(
   TF_RETURN_IF_ERROR(LowerToXlaGpuRuntime(
       mlir_module, {entry_function_name.data(), entry_function_name.size()},
       buffer_sizes, thunk_sequence.get(), module_config.debug_options(),
-      cuda_compute_capability));
+      compute_capability));
 
   // TODO(b/232033540): Pass MLIR module directly to Gpu runtime executable
   // without forcing serialization.
@@ -403,11 +399,14 @@ Status CompileModuleToLlvmIrImpl(
     }
   }
 
-  HloPassPipeline pipeline("fusion-wrapper");
-  // Wrap remaining unfused ops that have no LHLO equivalent in single-op
-  // fusions. This needs to happen after rematerialization, because it will
-  // insert additional copies.
-  TF_RETURN_IF_ERROR(FusionWrapper().Run(hlo_module).status());
+  {
+    HloPassPipeline pipeline("fusion-wrapper");
+    pipeline.AddPass<FusionWrapper>();
+    // Wrap remaining unfused ops that have no LHLO equivalent in single-op
+    // fusions. This needs to happen after rematerialization, because that will
+    // insert additional copies.
+    TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
+  }
 
   auto buffer_size_bytes_function =
       [pointer_size](const BufferValue& buffer_value) -> int64_t {
@@ -525,8 +524,7 @@ Status CompileModuleToLlvmIrImpl(
         LowerToJitRt(*mlir_module, entry_function.getName(), buffer_sizes,
                      hlo_module->config(), ir_emitter->ConsumeThunkSequence(),
                      /*hlo_module_for_dump=*/hlo_module,
-                     std::get<se::CudaComputeCapability>(
-                         gpu_device_info.compute_capability)));
+                     gpu_device_info.compute_capability));
     return OkStatus();
   }
 

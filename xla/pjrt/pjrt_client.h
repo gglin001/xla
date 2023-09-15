@@ -685,6 +685,11 @@ class PjRtClient {
   CreateBuffersForAsyncHostToDevice(absl::Span<const Shape> shapes,
                                     PjRtDevice* device) = 0;
 
+  // Variant of CreateBuffersForAsyncHostToDevice with PjRtMemorySpace.
+  virtual StatusOr<std::unique_ptr<AsyncHostToDeviceTransferManager>>
+  CreateBuffersForAsyncHostToDevice(absl::Span<const Shape> shapes,
+                                    PjRtMemorySpace* memory_space) = 0;
+
   // Describes the semantics the caller to BufferFromHostBuffer expects from the
   // runtime, in a total order from most restrictive to least restrictive.
   enum class HostBufferSemantics {
@@ -1105,6 +1110,18 @@ class PjRtBuffer {
   // comment for PjRtClient.
   virtual StatusOr<std::unique_ptr<PjRtBuffer>> CopyToDevice(
       PjRtDevice* dst_device) = 0;
+
+  // Copies the buffer to memory space `dst_memory_space`.
+  //
+  // The destination memory space may be attached to any client, but optimized
+  // implementations may apply when the copy is within the same client.
+  //
+  // Returns an error if the buffer is already in dst_memory_space.
+  //
+  // See note on semantics of cross-device copies in the class definition
+  // comment for PjRtClient.
+  virtual StatusOr<std::unique_ptr<PjRtBuffer>> CopyToMemorySpace(
+      PjRtMemorySpace* dst_memory_space) = 0;
 
   // Prepares to send a copy of the buffer to a remote device. The destination
   // device is encoded in `serialized_descriptor`, which must be fulfilled by

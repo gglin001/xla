@@ -27,6 +27,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/log/check.h"
 #include "absl/log/log.h"
 #include "absl/strings/string_view.h"
@@ -233,6 +234,13 @@ class PjRtCApiClient : public PjRtClient {
         "PJRT C API does not support CreateBuffersForAsyncHostToDevice");
   }
 
+  absl::StatusOr<std::unique_ptr<PjRtClient::AsyncHostToDeviceTransferManager>>
+  CreateBuffersForAsyncHostToDevice(absl::Span<const Shape> shapes,
+                                    PjRtMemorySpace* memory_space) override {
+    return Unimplemented(
+        "PJRT C API does not support CreateBuffersForAsyncHostToDevice");
+  }
+
   StatusOr<std::unique_ptr<PjRtBuffer>> BufferFromHostBuffer(
       const void* data, PrimitiveType type, absl::Span<int64_t const> dims,
       std::optional<absl::Span<int64_t const>> byte_strides,
@@ -372,11 +380,7 @@ class PjRtCApiBuffer : public PjRtBuffer {
 
   bool has_dynamic_dimensions() const override;
 
-  absl::Span<const bool> is_dynamic_dimension() const override {
-    LOG(FATAL) << "PjRtCApiBuffer::is_dynamic_dimension() not implemented. "
-               << "Considering using has_dynamic_dimensions() or "
-                  "logical_dimensions() if applicable.";
-  }
+  absl::Span<const bool> is_dynamic_dimension() const override;
 
   StatusOr<std::vector<int64_t>> logical_dimensions() override;
 
@@ -416,6 +420,11 @@ class PjRtCApiBuffer : public PjRtBuffer {
 
   StatusOr<std::unique_ptr<PjRtBuffer>> CopyToDevice(
       PjRtDevice* dst_device) override;
+
+  StatusOr<std::unique_ptr<PjRtBuffer>> CopyToMemorySpace(
+      PjRtMemorySpace* dst_memory_space) override {
+    return Unimplemented("PJRT C API does not support CopyToMemorySpace");
+  }
 
   void CopyToRemoteDevice(
       PjRtFuture<StatusOr<std::string>> serialized_descriptor,
@@ -457,6 +466,9 @@ class PjRtCApiBuffer : public PjRtBuffer {
   std::shared_ptr<PjRtFuture<Status>::Promise> readiness_promise_;
   // Set and cached the first time layout() is called.
   mutable std::optional<xla::Layout> layout_;
+  // Set and cached the first time is_dynamic_dimension() is called.
+  mutable std::optional<absl::InlinedVector<bool, InlineRank()>>
+      is_dynamic_dimension_;
   // Used to synchronize concurrent setting of cached values.
   mutable absl::Mutex mu_;
 };
@@ -489,6 +501,18 @@ class PjRtCApiExecutable : public PjRtExecutable {
       const override;
 
   StatusOr<std::vector<std::shared_ptr<HloModule>>> GetHloModules()
+      const override;
+
+  StatusOr<std::vector<Shape>> GetOutputShapes() const override {
+    LOG(FATAL) << "PjRtExecutable::GetOutputShapes() not implemented in PJRT C "
+                  "API. Please use PjRtExecutable::GetOutputElementTypes() or "
+                  "PjRtExecutable::GetOutputDimensions().";
+  }
+
+  StatusOr<std::vector<std::vector<PrimitiveType>>> GetOutputElementTypes()
+      const override;
+
+  StatusOr<std::vector<std::vector<DimensionVector>>> GetOutputDimensions()
       const override;
 
   StatusOr<std::vector<std::vector<absl::string_view>>> GetOutputMemoryKinds()
@@ -540,6 +564,23 @@ class PjRtCApiLoadedExecutable : public PjRtLoadedExecutable {
   StatusOr<std::vector<std::shared_ptr<HloModule>>> GetHloModules()
       const override {
     return executable_->GetHloModules();
+  }
+
+  StatusOr<std::vector<Shape>> GetOutputShapes() const override {
+    LOG(FATAL)
+        << "PjRtLoadedExecutable::GetOutputShapes() not implemented in PJRT C "
+           "API. Please use PjRtLoadedExecutable::GetOutputElementTypes() or "
+           "PjRtLoadedExecutable::GetOutputDimensions().";
+  }
+
+  StatusOr<std::vector<std::vector<PrimitiveType>>> GetOutputElementTypes()
+      const override {
+    return executable_->GetOutputElementTypes();
+  }
+
+  StatusOr<std::vector<std::vector<DimensionVector>>> GetOutputDimensions()
+      const override {
+    return executable_->GetOutputDimensions();
   }
 
   StatusOr<std::vector<std::vector<absl::string_view>>> GetOutputMemoryKinds()
