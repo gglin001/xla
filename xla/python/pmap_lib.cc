@@ -32,10 +32,13 @@ limitations under the License.
 #include "absl/synchronization/notification.h"
 #include "absl/types/span.h"
 #include "absl/types/variant.h"
-#include "pybind11/cast.h"  // from @pybind11
-#include "pybind11/pybind11.h"  // from @pybind11
-#include "pybind11/pytypes.h"  // from @pybind11
+#include "pybind11/cast.h"                 // from @pybind11
+#include "pybind11/pybind11.h"             // from @pybind11
+#include "pybind11/pytypes.h"              // from @pybind11
 #include "pybind11_abseil/absl_casters.h"  // from @pybind11_abseil
+#include "tsl/platform/logging.h"
+#include "tsl/platform/statusor.h"
+#include "tsl/profiler/lib/traceme.h"
 #include "xla/python/exceptions.h"
 #include "xla/python/ifrt/array.h"
 #include "xla/python/ifrt/dtype.h"
@@ -54,9 +57,6 @@ limitations under the License.
 #include "xla/python/types.h"
 #include "xla/python/util.h"
 #include "xla/xla_data.pb.h"
-#include "tsl/platform/logging.h"
-#include "tsl/platform/statusor.h"
-#include "tsl/profiler/lib/traceme.h"
 
 namespace jax {
 
@@ -521,7 +521,7 @@ xla::StatusOr<py::object> PmapFunction::Call(py::handle callable,
   // return nullptr value if a Python exception is thrown.
   auto cache_miss = [&]() -> py::tuple {
     return py::reinterpret_steal<py::tuple>(
-        PyObject_Vectorcall(cache_miss_.ptr(), args, nargs, kwnames));
+        _PyObject_Vectorcall(cache_miss_.ptr(), args, nargs, kwnames));
   };
 
   // Call the cache_miss() function, extracting the output data and ignoring
@@ -985,7 +985,7 @@ void BuildPmapSubmodule(py::module& m) {
     type->tp_name = "PmapFunction";
     type->tp_basicsize = sizeof(JaxPmapFunctionObject);
     type->tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE |
-                     Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_HAVE_VECTORCALL;
+                     Py_TPFLAGS_HAVE_GC | _Py_TPFLAGS_HAVE_VECTORCALL;
     type->tp_new = JaxPmapFunction_tp_new;
     type->tp_dealloc = JaxPmapFunction_tp_dealloc;
     type->tp_dictoffset = offsetof(JaxPmapFunctionObject, dict);

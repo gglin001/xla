@@ -27,6 +27,8 @@ limitations under the License.
 #include <vector>
 
 #include "absl/synchronization/notification.h"
+#include "tsl/platform/errors.h"
+#include "tsl/profiler/lib/traceme.h"
 #include "xla/pjrt/lru_cache.h"
 #include "xla/python/ifrt/array.h"
 #include "xla/python/jax_jit.h"
@@ -39,8 +41,6 @@ limitations under the License.
 #include "xla/python/status_casters.h"
 #include "xla/python/transfer_guard_lib.h"
 #include "xla/python/util.h"
-#include "tsl/platform/errors.h"
-#include "tsl/profiler/lib/traceme.h"
 
 namespace jax {
 namespace {
@@ -435,14 +435,14 @@ xla::StatusOr<py::object> PjitFunction::Call(py::handle callable,
                           function_name_));
     }
     return py::reinterpret_steal<py::object>(
-        PyObject_Vectorcall(fun_.value().ptr(), args, nargs, kwnames));
+        _PyObject_Vectorcall(fun_.value().ptr(), args, nargs, kwnames));
   }
 
   // Calls the cache_miss_ function. This just calls the Python function; it may
   // return nullptr value if a Python exception is thrown.
   auto cache_miss = [&]() -> py::tuple {
     return py::reinterpret_steal<py::tuple>(
-        PyObject_Vectorcall(cache_miss_.ptr(), args, nargs, kwnames));
+        _PyObject_Vectorcall(cache_miss_.ptr(), args, nargs, kwnames));
   };
 
   // Call the cache_miss() function, extracting the output data and ignoring
@@ -976,7 +976,7 @@ void BuildPjitSubmodule(py::module& m) {
     type->tp_name = "PjitFunction";
     type->tp_basicsize = sizeof(PjitFunctionObject);
     type->tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE |
-                     Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_HAVE_VECTORCALL;
+                     Py_TPFLAGS_HAVE_GC | _Py_TPFLAGS_HAVE_VECTORCALL;
     type->tp_new = PjitFunction_tp_new;
     type->tp_dealloc = PjitFunction_tp_dealloc;
     type->tp_dictoffset = offsetof(PjitFunctionObject, dict);
