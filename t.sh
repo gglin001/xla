@@ -1,3 +1,5 @@
+./config
+
 bazel build //xla/...
 
 bazel run :refresh_compile_commands
