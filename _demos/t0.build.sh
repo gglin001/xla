@@ -18,7 +18,7 @@ python configure.py "${args[@]}"
 
 # https://github.com/bazelbuild/bazelisk
 
-./bazelisk aquery //xla/examples/axpy:
+# ./bazelisk aquery //xla/examples/axpy:
 
 ###############################################################################
 
