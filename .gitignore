@@ -27,3 +27,4 @@ tools/python_bin_path.sh
 *.user
 
 bazelisk
+.clangd
