@@ -25,3 +25,7 @@ tools/python_bin_path.sh
 *.VC.opendb
 *.suo
 *.user
+
+build/
+.tf_configure.bazelrc
+tools/python_bin_path.sh
