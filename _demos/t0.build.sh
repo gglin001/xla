@@ -36,9 +36,10 @@ args=(
 )
 python configure.py "${args[@]}"
 
-# cat >>xla_configure.bazelrc <<EOF
+cat >>xla_configure.bazelrc <<EOF
 # build --repo_env HERMETIC_PYTHON_VERSION=3.12
-# EOF
+build --macos_minimum_os=12.0
+EOF
 
 ###############################################################################
 
