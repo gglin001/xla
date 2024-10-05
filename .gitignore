@@ -28,3 +28,6 @@ tools/python_bin_path.sh
 
 bazelisk
 .clangd
+llvm-project*
+
+MODULE.bazel.lock
