@@ -26,6 +26,9 @@ python configure.py -h
 
 ###############################################################################
 
+# for conda env on macos
+# micromamba install clangdev llvmdev lld compiler-rt
+
 args=(
   --backend CPU
   --os MACOS
@@ -51,12 +54,14 @@ bazelisk query "//xla/..."
 bazelisk query "//xla/examples/..."
 bazelisk query "//xla/service/spmd/shardy/..."
 
-bazelisk aquery "//xla/examples/..."
+# bazelisk aquery "//xla/examples/..."
+bazelisk aquery //xla/examples/axpy:stablehlo_compile_test
 
 ###############################################################################
 
 # demo
 bazelisk build //xla/examples/axpy:stablehlo_compile_test
+bazelisk run //xla/examples/axpy:stablehlo_compile_test
 
 # all
 bazelisk build //xla/...
