@@ -46,29 +46,6 @@ filegroup(
 )
 
 build_test(
-    name = "hex_floats_to_packed_literal_build_test",
-    targets = [
-        ":hex_floats_to_packed_literal",
-    ],
-)
-
-xla_cc_binary(
-    name = "hex_floats_to_packed_literal",
-    srcs = ["hex_floats_to_packed_literal.cc"],
-    deps = [
-        "//xla/tsl/lib/io:buffered_inputstream",
-        "//xla/tsl/lib/io:random_inputstream",
-        "//xla/tsl/util:command_line_flags",
-        "@com_google_absl//absl/base",
-        "@com_google_absl//absl/strings",
-        "@tsl//tsl/platform:env",
-        "@tsl//tsl/platform:logging",
-        "@tsl//tsl/platform:platform_port",
-        "@tsl//tsl/platform:status",
-    ],
-)
-
-build_test(
     name = "show_signature_build_test",
     targets = [
         ":show_signature",
@@ -91,92 +68,6 @@ xla_cc_binary(
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
-    ],
-)
-
-build_test(
-    name = "show_literal_build_test",
-    targets = [
-        ":show_literal",
-    ],
-)
-
-xla_cc_binary(
-    name = "show_literal",
-    srcs = ["show_literal.cc"],
-    deps = [
-        "//xla:literal",
-        "//xla:types",
-        "//xla:xla_data_proto_cc",
-        "@tsl//tsl/platform:env",
-        "@tsl//tsl/platform:logging",
-        "@tsl//tsl/platform:platform_port",
-        "@tsl//tsl/platform:status",
-    ],
-)
-
-build_test(
-    name = "convert_computation_build_test",
-    targets = [
-        ":convert_computation",
-    ],
-)
-
-xla_cc_binary(
-    name = "convert_computation",
-    srcs = ["convert_computation.cc"],
-    deps = [
-        "//xla/service:hlo_proto_cc",
-        "@tsl//tsl/platform:env",
-        "@tsl//tsl/platform:logging",
-        "@tsl//tsl/platform:platform_port",
-        "@tsl//tsl/platform:protobuf",
-        "@tsl//tsl/platform:status",
-    ],
-)
-
-build_test(
-    name = "hlo_module_metadata_processor_build_test",
-    targets = [
-        ":hlo_module_metadata_processor",
-    ],
-)
-
-xla_cc_binary(
-    name = "hlo_module_metadata_processor",
-    srcs = ["hlo_module_metadata_processor.cc"],
-    deps = [
-        "//xla/service:hlo_proto_cc",
-        "@com_google_absl//absl/container:flat_hash_map",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@tsl//tsl/platform:env",
-        "@tsl//tsl/platform:logging",
-        "@tsl//tsl/platform:platform_port",
-        "@tsl//tsl/platform:protobuf",
-        "@tsl//tsl/platform:status",
-    ],
-)
-
-build_test(
-    name = "show_text_literal_build_test",
-    targets = [
-        ":show_text_literal",
-    ],
-)
-
-xla_cc_binary(
-    name = "show_text_literal",
-    srcs = ["show_text_literal.cc"],
-    deps = [
-        "//xla:literal",
-        "//xla:text_literal_reader",
-        "//xla:types",
-        "//xla:xla_data_proto_cc",
-        "@com_google_absl//absl/status:statusor",
-        "@tsl//tsl/platform:logging",
-        "@tsl//tsl/platform:platform_port",
-        "@tsl//tsl/platform:protobuf",
     ],
 )
 
@@ -238,28 +129,6 @@ xla_cc_binary(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@tsl//tsl/platform:env",
-        "@tsl//tsl/platform:logging",
-        "@tsl//tsl/platform:platform_port",
-        "@tsl//tsl/platform:status",
-    ],
-)
-
-build_test(
-    name = "hlo_proto_to_json_build_test",
-    targets = [
-        ":hlo_proto_to_json",
-    ],
-)
-
-xla_cc_binary(
-    name = "hlo_proto_to_json",
-    srcs = ["hlo_proto_to_json.cc"],
-    deps = [
-        "//xla:util",
-        "//xla/service:hlo_proto_cc",
-        "//xla/tsl/util:command_line_flags",
-        "@com_google_absl//absl/status:statusor",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:logging",
         "@tsl//tsl/platform:platform_port",
@@ -428,6 +297,7 @@ xla_cc_binary(
         "//xla/service:hlo_runner",
         "//xla/service:local_service",
         "//xla/service:platform_util",
+        "//xla/tsl/protobuf:error_codes_proto_impl_cc",
         "//xla/tsl/util:command_line_flags",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_set",
@@ -436,7 +306,6 @@ xla_cc_binary(
         "@tsl//tsl/platform:path",
         "@tsl//tsl/platform:platform_port",
         "@tsl//tsl/platform:subprocess",
-        "@tsl//tsl/protobuf:error_codes_proto_impl_cc",
     ] + if_cuda_or_rocm([
         "//xla/service:gpu_plugin",
     ]) + if_cuda([
@@ -853,6 +722,7 @@ xla_test(
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",  # fixdeps: keep
         "//xla/tsl/lib/core:status_test_util",
+        "//xla/tsl/protobuf:error_codes_proto_impl_cc",
         "//xla/tsl/protobuf:status_proto_cc",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/synchronization",
@@ -864,7 +734,6 @@ xla_test(
         "@tsl//tsl/platform:status_matchers",
         "@tsl//tsl/platform:statusor",
         "@tsl//tsl/platform:test",
-        "@tsl//tsl/protobuf:error_codes_proto_impl_cc",
     ] + if_google(["@com_google_protobuf//:duration_cc_proto"]),
 )
 
@@ -896,6 +765,7 @@ xla_test(
         "//xla/tests:hlo_test_base",
         "//xla/tests:xla_internal_test_main",  # fixdeps: keep
         "//xla/tsl/lib/core:status_test_util",
+        "//xla/tsl/protobuf:error_codes_proto_impl_cc",
         "//xla/tsl/protobuf:status_proto_cc",
         "@com_google_googletest//:gtest",
         "@tsl//tsl/platform:env",
@@ -903,7 +773,6 @@ xla_test(
         "@tsl//tsl/platform:status_matchers",
         "@tsl//tsl/platform:statusor",
         "@tsl//tsl/platform:test",
-        "@tsl//tsl/protobuf:error_codes_proto_impl_cc",
     ],
 )
 
