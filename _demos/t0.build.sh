@@ -18,18 +18,18 @@ python configure.py "${args[@]}"
 
 # https://github.com/bazelbuild/bazelisk
 
-./bazelisk aquery "//xla/examples/..."
-./bazelisk query "//xla/examples/..."
-./bazelisk query "//xla/service/spmd/shardy/..."
+bazelisk aquery "//xla/examples/..."
+bazelisk query "//xla/examples/..."
+bazelisk query "//xla/service/spmd/shardy/..."
 
 ###############################################################################
 
 # demo
-./bazelisk build //xla/examples/axpy:stablehlo_compile_test
+bazelisk build //xla/examples/axpy:stablehlo_compile_test
 
 # all
-./bazelisk build //xla/...
+bazelisk build //xla/...
 
-./bazelisk run :refresh_compile_commands
+bazelisk run :refresh_compile_commands
 
 ###############################################################################
