@@ -44,7 +44,6 @@ bool IsTritonSupportedDataType(PrimitiveType type,
                                const se::GpuComputeCapability& gpu_version) {
   switch (type) {
     case PRED:
-    case S4:
     case S8:
     case S16:
     case S32:
@@ -67,8 +66,6 @@ bool IsTritonSupportedDataType(PrimitiveType type,
 }
 
 // Set of unary elementwise ops that are genuinely supported by Triton.
-// TODO(b/345763510): make sure that this is accurate. At the moment, this is
-// mostly a fork of the same code in legacy_triton::.
 absl::flat_hash_set<HloOpcode> TritonSupportedUnaryElementwiseOps(
     PrimitiveType element_type) {
   if (element_type == PrimitiveType::PRED) {
@@ -90,7 +87,9 @@ absl::flat_hash_set<HloOpcode> TritonSupportedUnaryElementwiseOps(
     ret.insert(HloOpcode::kNot);
   }
 
-  if (element_type == PrimitiveType::F32 ||
+  if (element_type == PrimitiveType::BF16 ||
+      element_type == PrimitiveType::F16 ||
+      element_type == PrimitiveType::F32 ||
       element_type == PrimitiveType::F64) {
     absl::flat_hash_set<HloOpcode> additional_opcodes{
         HloOpcode::kCos,   HloOpcode::kExp,   HloOpcode::kExpm1,
@@ -98,13 +97,6 @@ absl::flat_hash_set<HloOpcode> TritonSupportedUnaryElementwiseOps(
         HloOpcode::kLog1p, HloOpcode::kRsqrt, HloOpcode::kSin,
         HloOpcode::kSqrt,  HloOpcode::kCbrt,  HloOpcode::kTan,
         HloOpcode::kTanh,  HloOpcode::kErf};
-    ret.insert(additional_opcodes.begin(), additional_opcodes.end());
-  }
-
-  if (element_type == PrimitiveType::BF16 ||
-      element_type == PrimitiveType::F16) {
-    absl::flat_hash_set<HloOpcode> additional_opcodes{HloOpcode::kFloor,
-                                                      HloOpcode::kCeil};
     ret.insert(additional_opcodes.begin(), additional_opcodes.end());
   }
 
@@ -143,8 +135,7 @@ CodegenDecision IsTritonSupportedConversion(
   }
 
   if (IsTritonSupportedDataType(input, gpu_version) &&
-      (IsTritonSupportedDataType(output, gpu_version) ||
-       output == PrimitiveType::S4)) {
+      IsTritonSupportedDataType(output, gpu_version)) {
     return CodegenDecision::Allow();
   }
 
@@ -187,13 +178,17 @@ absl::flat_hash_set<HloOpcode> TritonSupportedBinaryElementwiseOps(
     ret.insert(HloOpcode::kRemainder);
     ret.insert(HloOpcode::kPower);
   }
+  if (element_type == PrimitiveType::BF16 ||
+      element_type == PrimitiveType::F16) {
+    ret.insert(HloOpcode::kAtan2);
+    ret.insert(HloOpcode::kPower);
+    ret.insert(HloOpcode::kRemainder);
+  }
 
   return ret;
 }
 
 // Set of ternary elementwise ops that are genuinely supported by Triton.
-// TODO(b/345763510): make sure that this is accurate. At the moment, this is
-// mostly a fork of the same code in legacy_triton::.
 absl::flat_hash_set<HloOpcode> TritonSupportedTernaryElementwiseOps(
     PrimitiveType element_type, const se::GpuComputeCapability& gpu_version) {
   if (element_type == PrimitiveType::U16) {
@@ -222,8 +217,7 @@ bool IsTritonSupportedElementwise(HloOpcode opcode, PrimitiveType element_type,
 }
 
 CodegenDecision IsTritonSupportedInstructionImpl(
-    const HloInstruction& instr, const se::GpuComputeCapability& gpu_version,
-    bool is_within_reduction_computation);
+    const HloInstruction& instr, const se::GpuComputeCapability& gpu_version);
 
 // Filters Reduces which can be handled using Triton.
 CodegenDecision CanTritonHandleReduce(
@@ -237,10 +231,7 @@ CodegenDecision CanTritonHandleReduce(
 
   bool is_triton_supported_reduction_computation = absl::c_all_of(
       reduce.to_apply()->instructions(), [&](const HloInstruction* instr) {
-        return IsTritonSupportedInstructionImpl(
-                   *instr, gpu_version,
-                   /*is_within_reduction_computation=*/true)
-            .CanFuse();
+        return IsTritonSupportedInstructionImpl(*instr, gpu_version).CanFuse();
       });
   if (!is_triton_supported_reduction_computation) {
     return CodegenDecision::Forbid(
@@ -255,14 +246,9 @@ CodegenDecision CanTritonHandleReduce(
 }
 
 CodegenDecision IsTritonSupportedInstructionImpl(
-    const HloInstruction& instr, const se::GpuComputeCapability& gpu_version,
-    bool is_within_reduction_computation) {
+    const HloInstruction& instr, const se::GpuComputeCapability& gpu_version) {
   if (internal::IsTritonUnsupportedOpcode(instr.opcode())) {
     return CodegenDecision::Forbid("Unsupported opcode.");
-  }
-
-  if (IsUnsupported0DTensor(instr, is_within_reduction_computation)) {
-    return CodegenDecision::Forbid("Unsupported 0D tensor");
   }
 
   // Special handling for the kConvert instruction, which has a non-standard
@@ -293,7 +279,7 @@ CodegenDecision IsTritonSupportedInstructionImpl(
   // Const is technically an elementwise op, so this check must be before the
   // elementwise check.
   if (instr.opcode() == HloOpcode::kConstant) {
-    return ShapeUtil::IsScalar(instr.shape())
+    return ShapeUtil::IsEffectiveScalar(instr.shape())
                ? CodegenDecision::Allow()
                : CodegenDecision::Forbid(
                      "Only scalar constants are supported in Triton.");
@@ -381,6 +367,8 @@ bool IsTritonUnsupportedOpcode(HloOpcode opcode) {
     case HloOpcode::kOutfeed:
     case HloOpcode::kPad:
     case HloOpcode::kPartitionId:
+    case HloOpcode::kRaggedAllToAll:
+    case HloOpcode::kRaggedDot:
     case HloOpcode::kRecv:
     case HloOpcode::kRecvDone:
     case HloOpcode::kReduceWindow:
@@ -430,8 +418,8 @@ absl::Status EnsureTritonSupportsComputeCapability(
 
 CodegenDecision IsTritonSupportedInstruction(
     const HloInstruction& instr, const se::GpuComputeCapability& gpu_version) {
-  CodegenDecision decision = IsTritonSupportedInstructionImpl(
-      instr, gpu_version, /*is_within_reduction_computation=*/false);
+  CodegenDecision decision =
+      IsTritonSupportedInstructionImpl(instr, gpu_version);
   VLOG(2) << "IsTritonSupportedInstruction: " << instr.ToString() << " "
           << bool(decision);
   return decision;
@@ -459,38 +447,6 @@ bool IsTritonFusedComputation(const HloComputation& computation) {
          fusion->backend_config<gpu::GpuBackendConfig>()
                  ->fusion_backend_config()
                  .kind() == kTritonGemmFusionKind;
-}
-
-bool IsUnsupported0DTensor(const HloInstruction& instr,
-                           bool is_within_reduction_computation) {
-  if (!instr.shape().IsArray() || instr.shape().rank() != 0 ||
-      is_within_reduction_computation ||
-      instr.opcode() == HloOpcode::kConstant) {
-    return false;
-  }
-
-  // At this point we know that the output shape is a 0D tensor.
-
-  // Broadcast has special handling logic to support 0D tensors.
-  if (instr.user_count() > 0 &&
-      absl::c_all_of(instr.users(), [&](const HloInstruction* user) {
-        return user->opcode() == HloOpcode::kBroadcast;
-      })) {
-    return false;
-  }
-
-  // Elementwise ops with both 0D operands and 0D outputs are OK, because
-  // there is no mixing of blocked and non-blocked encodings. The ROOT
-  // still doesn't support 0D outputs, however.
-  if (instr.IsElementwise() && !instr.IsRoot() &&
-      absl::c_all_of(instr.operands(), [&](const HloInstruction* operand) {
-        return operand->shape().IsArray() && operand->shape().rank() == 0;
-      })) {
-    return false;
-  }
-
-  // Nothing else is supported.
-  return true;
 }
 
 }  // namespace gpu

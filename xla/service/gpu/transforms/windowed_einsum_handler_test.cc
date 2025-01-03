@@ -25,10 +25,10 @@ limitations under the License.
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/hlo/testlib/filecheck.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/pattern_matcher.h"
 #include "xla/service/pattern_matcher_gmock.h"
-#include "xla/tests/filecheck.h"
 #include "xla/tests/hlo_test_base.h"
 #include "tsl/platform/statusor.h"
 
@@ -115,7 +115,7 @@ ENTRY test_main {
   HloComputation* ag_loop_body = ag_loop->while_body();
   int64_t dot_count = 0;
   for (HloInstruction* inst : ag_loop_body->MakeInstructionPostOrder()) {
-    if (inst->opcode() == HloOpcode::kDot) {
+    if (HloPredicateIsOp<HloOpcode::kDot>(inst)) {
       dot_count++;
       EXPECT_GT(inst->backend_config<GpuBackendConfig>()->operation_queue_id(),
                 0);
@@ -198,7 +198,7 @@ ENTRY main.9_spmd {
   HloComputation* rs_loop_body = rs_loop->while_body();
   int64_t dot_count = 0;
   for (HloInstruction* inst : rs_loop_body->MakeInstructionPostOrder()) {
-    if (inst->opcode() == HloOpcode::kDot) {
+    if (HloPredicateIsOp<HloOpcode::kDot>(inst)) {
       dot_count++;
       EXPECT_GT(inst->backend_config<GpuBackendConfig>()->operation_queue_id(),
                 0);
@@ -282,7 +282,7 @@ ENTRY main.12_spmd {
   HloComputation* while_body = while_loop->while_body();
   int64_t dot_count = 0;
   for (HloInstruction* ins : while_body->MakeInstructionPostOrder()) {
-    if (ins->opcode() == HloOpcode::kDot) {
+    if (HloPredicateIsOp<HloOpcode::kDot>(ins)) {
       dot_count++;
       EXPECT_GT(ins->backend_config<GpuBackendConfig>()->operation_queue_id(),
                 0);
@@ -825,11 +825,11 @@ ENTRY main.9_spmd {
   constant.20 = u32[] constant(0)
   scale_lhs = f32[] parameter(3)
   scale_lhs_bcast = f32[2,2048,24576]{2,1,0} broadcast(scale_lhs), dimensions={}
-  lhs_bf16 = f32[2,2048,24576]{2,1,0} convert(param.8)  
+  lhs_bf16 = f32[2,2048,24576]{2,1,0} convert(param.8)
   lhs_scaled = f32[2,2048,24576]{2,1,0} multiply(lhs_bf16, scale_lhs_bcast)
   scale_rhs = f32[] parameter(4)
   scale_rhs_bcast = f32[24576,24576]{1,0} broadcast(scale_rhs), dimensions={}
-  rhs_bf16 = f32[24576,24576]{1,0} convert(param.6)  
+  rhs_bf16 = f32[24576,24576]{1,0} convert(param.6)
   rhs_scaled = f32[24576,24576]{1,0} multiply(rhs_bf16, scale_rhs_bcast)
   tuple.3 = (f32[2,2048,24576]{2,1,0}, f32[24576,24576]{1,0}, f32[2,512,24576]{2,1,0}, f32[2,512,24576]{2,1,0}, u32[]) tuple(lhs_scaled, rhs_scaled, param.7, param.7, constant.20)
   while.1 = (f32[2,2048,24576]{2,1,0}, f32[24576,24576]{1,0}, f32[2,512,24576]{2,1,0}, f32[2,512,24576]{2,1,0}, u32[]) while(tuple.3), condition=windowed_dot_general_cond_rs, body=windowed_dot_general_body_rs
@@ -1079,7 +1079,7 @@ ENTRY main {
 TEST_F(WindowedEinsumHandlerTest,
        AgLoopsMultipleConsumersAreChainedWithShardedContratingDim) {
   constexpr absl::string_view kHloString = R"(
-HloModule pjit__unnamed_wrapped_function_, entry_computation_layout={(bf16[16,2048,512]{2,1,0}, bf16[4096,6288]{1,0}, bf16[16,2048,6288]{2,1,0})->bf16[4096,6288]{1,0}}, num_partitions=8
+HloModule pjit__unnamed_wrapped_function_, entry_computation_layout={(bf16[16,2048,512]{2,1,0}, bf16[4096,6288]{1,0}, bf16[16,2048,6288]{2,1,0})->(bf16[16,2048,6288]{2,1,0}, bf16[4096,6288]{1,0})}, num_partitions=8
 
 windowed_dot_general_body_ag {
   param.195 = (bf16[16,2048,512]{2,1,0}, bf16[4096,6288]{1,0}, bf16[16,2048,6288]{2,1,0}, bf16[16,2048,6288]{2,1,0}, u32[]) parameter(0)
@@ -1129,10 +1129,11 @@ ENTRY main.12_spmd {
   constant.24 = u32[] constant(0)
   tuple.2 = (bf16[16,2048,512]{2,1,0}, bf16[4096,6288]{1,0}, bf16[16,2048,6288]{2,1,0}, bf16[16,2048,6288]{2,1,0}, u32[]) tuple(param.4, param.5, broadcast, broadcast, constant.24)
   while = (bf16[16,2048,512]{2,1,0}, bf16[4096,6288]{1,0}, bf16[16,2048,6288]{2,1,0}, bf16[16,2048,6288]{2,1,0}, u32[]) while(tuple.2), condition=windowed_dot_general_cond_ag, body=windowed_dot_general_body_ag
-  get-tuple-element.13 = bf16[16,2048,6288]{2,1,0} get-tuple-element(while), index=2
+  get-tuple-element.result = bf16[16,2048,6288]{2,1,0} get-tuple-element(while), index=2
   all-gather = bf16[16,2048,4096]{2,1,0} all-gather(param.4), channel_id=1, replica_groups={{0,1,2,3,4,5,6,7}}, dimensions={2}, use_global_device_ids=true
   param.6 = bf16[16,2048,6288]{2,1,0} parameter(2)
-  ROOT dot.7 = bf16[4096,6288]{1,0} dot(all-gather, param.6), lhs_contracting_dims={0,1}, rhs_contracting_dims={0,1}
+  dot.7 = bf16[4096,6288]{1,0} dot(all-gather, param.6), lhs_contracting_dims={0,1}, rhs_contracting_dims={0,1}
+  ROOT tuple.output = (bf16[16,2048,6288]{2,1,0}, bf16[4096,6288]{1,0}) tuple(get-tuple-element.result, dot.7)
 }
 )";
 
@@ -1152,6 +1153,12 @@ ENTRY main.12_spmd {
   EXPECT_EQ(inst->operand(0)->opcode(), HloOpcode::kGetTupleElement);
   EXPECT_EQ(inst->operand(0)->tuple_index(), 5);
   EXPECT_EQ(inst->operand(0)->operand(0), ag_loop);
+
+  EXPECT_EQ(ag_loop->operand(0)->shape().tuple_shapes_size(), 7);
+  // The root instruction's first operand should now be a reduction.
+  EXPECT_EQ(
+      module->entry_computation()->root_instruction()->operand(0)->opcode(),
+      HloOpcode::kReduce);
 }
 
 }  // namespace

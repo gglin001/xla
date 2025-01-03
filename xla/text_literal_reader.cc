@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "xla/text_literal_reader.h"
 
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
@@ -30,8 +31,8 @@ limitations under the License.
 #include "absl/strings/str_split.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/strip.h"
+#include "xla/hlo/parser/hlo_parser.h"
 #include "xla/literal.h"
-#include "xla/service/hlo_parser.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/tsl/lib/io/buffered_inputstream.h"

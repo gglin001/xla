@@ -83,6 +83,7 @@ PJRT_Error* PJRT_Client_Create(PJRT_Client_Create_Args* args) {
           {"node_id", PJRT_NamedValue_Type::PJRT_NamedValue_kInt64},
           {"num_nodes", PJRT_NamedValue_Type::PJRT_NamedValue_kInt64},
           {"enable_mock_nccl", PJRT_NamedValue_Type::PJRT_NamedValue_kBool},
+          {"mock_gpu_topology", PJRT_NamedValue_Type::PJRT_NamedValue_kString},
       });
   PJRT_RETURN_IF_ERROR(
       ValidateCreateOptions(create_options, kExpectedOptionNameAndTypes));
@@ -141,6 +142,11 @@ PJRT_Error* PJRT_Client_Create(PJRT_Client_Create_Args* args) {
       it != create_options.end()) {
     enable_mock_nccl = std::get<bool>(it->second);
   }
+  std::optional<std::string> mock_gpu_topology;
+  if (auto it = create_options.find("mock_gpu_topology");
+      it != create_options.end()) {
+    mock_gpu_topology = std::get<std::string>(it->second);
+  }
 
   xla::GpuClientOptions options;
   options.allocator_config = allocator_config;
@@ -152,6 +158,7 @@ PJRT_Error* PJRT_Client_Create(PJRT_Client_Create_Args* args) {
       pjrt::ToCppKeyValueStore(args->kv_get_callback, args->kv_get_user_arg,
                                args->kv_put_callback, args->kv_put_user_arg);
   options.enable_mock_nccl = enable_mock_nccl;
+  options.mock_gpu_topology = mock_gpu_topology;
   PJRT_ASSIGN_OR_RETURN(std::unique_ptr<xla::PjRtClient> client,
                         xla::GetStreamExecutorGpuClient(options));
   args->client = pjrt::CreateWrapperClient(std::move(client));
@@ -208,33 +215,6 @@ absl::StatusOr<TargetConfigAndDevices> GetTargetConfigFromOptions(
   return {{gpu_target_config.ToProto(), device_ids}};
 }
 
-struct TopologySizes {
-  int num_slices = 0;
-  int num_hosts_per_slice = 0;
-  int num_devices_per_host = 0;
-
-  int GetDeviceCount() {
-    return num_slices * num_hosts_per_slice * num_devices_per_host;
-  }
-
-  static absl::StatusOr<TopologySizes> FromString(
-      std::string_view topology_string) {
-    TopologySizes sizes;
-    std::vector<std::string> topology_components =
-        absl::StrSplit(topology_string, 'x');
-    if (topology_components.size() != 3 ||
-        !absl::SimpleAtoi(topology_components[0], &sizes.num_slices) ||
-        !absl::SimpleAtoi(topology_components[1], &sizes.num_hosts_per_slice) ||
-        !absl::SimpleAtoi(topology_components[2],
-                          &sizes.num_devices_per_host)) {
-      return absl::InternalError(
-          "topology must be of shape "
-          "\"<num-slices>x<num-hosts-per-slice>x<num-devices-per-host>\"");
-    }
-    return sizes;
-  }
-};
-
 }  // namespace
 
 PJRT_Error* PJRT_GpuDeviceTopology_Create(
@@ -261,12 +241,13 @@ PJRT_Error* PJRT_GpuDeviceTopology_Create(
   std::vector<int>& device_ids = target_config_and_devices.device_ids;
   stream_executor::GpuTargetConfigProto& target_config_proto =
       target_config_and_devices.target_config_proto;
-  TopologySizes sizes{1, 1, static_cast<int>(device_ids.size())};
+  xla::TopologySizes sizes{1, 1, static_cast<int>(device_ids.size())};
 
   if (auto topology_it = create_options.find("topology");
       topology_it != create_options.end()) {
     std::string topology_string = std::get<std::string>(topology_it->second);
-    PJRT_ASSIGN_OR_RETURN(sizes, TopologySizes::FromString(topology_string));
+    PJRT_ASSIGN_OR_RETURN(sizes,
+                          xla::TopologySizes::FromString(topology_string));
   }
 
   if (sizes.GetDeviceCount() == 0) {
@@ -280,18 +261,25 @@ PJRT_Error* PJRT_GpuDeviceTopology_Create(
 
   if (sizes.GetDeviceCount() != device_ids.size()) {
     device_ids.resize(sizes.GetDeviceCount());
-    absl::c_iota(device_ids, sizes.GetDeviceCount());
+    absl::c_iota(device_ids, 0);
   }
 
   auto gpu_topology = std::make_shared<const xla::GpuTopology>(
       device_ids, target_config_proto.device_description_str(),
       sizes.num_slices, sizes.num_hosts_per_slice, sizes.num_devices_per_host);
 
+  std::string target_config_attr;
+  if (!tsl::protobuf::TextFormat::PrintToString(target_config_proto,
+                                                &target_config_attr)) {
+    return new PJRT_Error{
+        absl::FailedPreconditionError("Cannot serialize target_config_proto")};
+  }
   auto pjrt_topology =
       std::make_unique<xla::StreamExecutorGpuTopologyDescription>(
           platform_id, platform_name, std::move(gpu_topology),
           absl::flat_hash_map<std::string, xla::PjRtDeviceAttribute>{
-              {"target_config", target_config_proto.SerializeAsString()}});
+              {"target_config", std::move(target_config_attr)}},
+          std::move(target_config_proto));
   args->topology = CreateWrapperDeviceTopology(std::move(pjrt_topology));
   return nullptr;
 }
@@ -411,12 +399,16 @@ const PJRT_Api* GetGpuPjrtApi() {
   static PJRT_FFI_Extension ffi_extension = pjrt::CreateFfiExtension(
       reinterpret_cast<PJRT_Extension_Base*>(&layouts_extension));
 
+  static PJRT_MemoryDescriptions_Extension memory_descriptions_extension =
+      pjrt::CreateMemoryDescriptionsExtension(
+          reinterpret_cast<PJRT_Extension_Base*>(&ffi_extension));
+
   static const PJRT_Api pjrt_api = pjrt::CreatePjrtApi(
       pjrt::gpu_plugin::PJRT_Client_Create,
       pjrt::gpu_plugin::PJRT_ExecuteContext_Create,
       pjrt::gpu_plugin::PJRT_GpuDeviceTopology_Create,
       pjrt::PJRT_Plugin_Initialize_NoOp,
-      reinterpret_cast<PJRT_Extension_Base*>(&ffi_extension),
+      reinterpret_cast<PJRT_Extension_Base*>(&memory_descriptions_extension),
       pjrt::PJRT_Plugin_Attributes_Xla);
 
   return &pjrt_api;
