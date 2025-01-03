@@ -1,9 +1,10 @@
 """Provides the repository macro to import LLVM."""
 
+_ = """
 load("//third_party:repo.bzl", "tf_http_archive")
 
 def repo(name):
-    """Imports LLVM."""
+    "Imports LLVM."
     LLVM_COMMIT = "f739aa4004165dc64d3a1f418d5ad3c84886f01a"
     LLVM_SHA256 = "85da134e7ba044ef50ebc009d1a57a87fb0e2db208a04650ef2fe564e9564aa7"
 
@@ -25,8 +26,9 @@ def repo(name):
         ],
         link_files = {"//third_party/llvm:run_lit.sh": "mlir/run_lit.sh"},
     )
+"""
 
-# load("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
-# local_path = "llvm-project-full"
-# def repo(name):
-#     local_repository(name = name, path = local_path)
+load("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+local_path = "llvm-project-full"
+def repo(name):
+    local_repository(name = name, path = local_path)
